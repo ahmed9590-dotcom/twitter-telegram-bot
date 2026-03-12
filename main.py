@@ -1,15 +1,17 @@
-import asyncio
 import os
 import requests
-from twikit import Client
+import feedparser
 
-async def main():
+def main():
     TELEGRAM_TOKEN   = os.environ['TELEGRAM_TOKEN']
     TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
     TARGET_ACCOUNTS  = os.environ['TARGET_ACCOUNT'].split(',')
 
-    client = Client('en-US')
-    await client.activate_guest_session()
+    nitter_instances = [
+        'https://nitter.privacydev.net',
+        'https://nitter.poast.org',
+        'https://nitter.net',
+    ]
 
     for account in TARGET_ACCOUNTS:
         account = account.strip()
@@ -21,36 +23,43 @@ async def main():
             if content:
                 last_id = content
 
-        try:
-            user   = await client.get_user_by_screen_name(account)
-            tweets = await user.get_tweets('Tweets', count=10)
-        except Exception as e:
-            print(f"خطأ في {account}: {e}")
-            continue
+        feed = None
+        for instance in nitter_instances:
+            try:
+                rss_url = f'{instance}/{account}/rss'
+                response = requests.get(rss_url, timeout=10)
+                if response.status_code == 200:
+                    feed = feedparser.parse(response.content)
+                    if feed.entries:
+                        break
+            except:
+                continue
 
-        if not tweets:
-            print(f"لا يوجد تغريدات جديدة من {account}")
+        if not feed or not feed.entries:
+            print(f"لا يوجد تغريدات من {account}")
             continue
 
         new_tweets = []
-        for tweet in tweets:
-            if last_id and tweet.id <= last_id:
+        for entry in feed.entries:
+            tweet_id = entry.link.split('/')[-1].split('#')[0]
+            if last_id and tweet_id <= last_id:
                 break
-            new_tweets.append(tweet)
+            new_tweets.append((tweet_id, entry.title, entry.link))
 
-        for tweet in reversed(new_tweets):
+        for tweet_id, text, link in reversed(new_tweets):
             message = (
                 f"🐦 تغريدة جديدة من @{account}:\n\n"
-                f"{tweet.text}\n\n"
-                f"🔗 https://x.com/{account}/status/{tweet.id}"
+                f"{text}\n\n"
+                f"🔗 {link}"
             )
             requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                 data={"chat_id": TELEGRAM_CHAT_ID, "text": message}
             )
-            print(f"تم إرسال: {tweet.id}")
+            print(f"تم إرسال: {tweet_id}")
 
-        with open(last_id_file, 'w') as f:
-            f.write(tweets[0].id)
+        if new_tweets:
+            with open(last_id_file, 'w') as f:
+                f.write(new_tweets[0][0])
 
-asyncio.run(main())
+main()
